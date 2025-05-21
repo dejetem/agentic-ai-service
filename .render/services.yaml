@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: agentic-ai-service
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: OPENAI_API_KEY
+        value:  ${OPENAI_API_KEY}
+      - key: DATABASE_URL
+        value: ${DATABASE_URL}
