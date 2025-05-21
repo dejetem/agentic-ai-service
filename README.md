@@ -17,6 +17,16 @@ Interactive API docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 ---
 
+
+pgAdmin: [http://localhost:5050](http://localhost:5050)
+  -- Login: admin@admin.com / admin
+  -- Add Server:
+    -- Host: db
+    -- Username: postgres
+    -- Password: postgres
+
+
+
 ## Example API Call
 
 Send a POST request with JSON payload:

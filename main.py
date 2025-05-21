@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from databases import Database
 from pydantic import BaseModel, constr, EmailStr
 import os
 import json
@@ -8,11 +9,16 @@ from datetime import datetime
 import aiosqlite
 from openai import OpenAI
 from dotenv import load_dotenv
+import aiosmtplib
+from email.message import EmailMessage
+
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()  # Load OPENAI_API_KEY from .env
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/tasks_db")
+database = Database(DATABASE_URL)
 
 
 
@@ -44,30 +50,26 @@ class AgentResponse(BaseModel):
 # Create the database table on startup
 @app.on_event("startup")
 async def startup():
-    """
-    Create the task_log table if it doesn't exist.
-    """
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS task_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                description TEXT NOT NULL,
-                timestamp TEXT NOT NULL
-            )
-        """)
-        await db.commit()
+    await database.connect()
+    await database.execute("""
+        CREATE TABLE IF NOT EXISTS task_log (
+            id SERIAL PRIMARY KEY,
+            description TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        )
+    """)
+    
+@app.on_event("shutdown")
+async def shutdown():
+    await database.disconnect()
 
 async def create_task(description: str) -> int:
     """
     Insert a new task into the database and return its ID.
     """
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "INSERT INTO task_log (description, timestamp) VALUES (?, ?)",
-            (description, datetime.utcnow().isoformat())
-        )
-        await db.commit()
-        return cursor.lastrowid
+    query = "INSERT INTO task_log (description, timestamp) VALUES (:description, :timestamp) RETURNING id"
+    values = {"description": description, "timestamp": datetime.utcnow().isoformat()}
+    return await database.execute(query=query, values=values)
 
 async def send_notification(message: str, to_email: Optional[str] = None) -> bool:
     """
@@ -76,7 +78,42 @@ async def send_notification(message: str, to_email: Optional[str] = None) -> boo
     # Here we just print the notification as a placeholder for a real side effect.
     # print(f"[Notification] {message}")
     logger.info(f"Notification: {message}")
-    return True
+    logger.info(f"to_email: {to_email}")
+
+    """
+    Send an email notification using SMTP.
+    """
+
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    from_email = os.getenv("FROM_EMAIL")
+
+    if not all([smtp_host, smtp_user, smtp_password, from_email]):
+        logger.error("SMTP environment variables not set correctly.")
+        return False
+    
+    email = EmailMessage()
+    email["From"] = from_email
+    email["To"] = to_email
+    email["Subject"] = "Agent Notification"
+    email.set_content(message)
+    
+    try:
+        await aiosmtplib.send(
+            email,
+            hostname=smtp_host,
+            port=smtp_port,
+            username=smtp_user,
+            password=smtp_password,
+            start_tls=True,
+        )
+        logger.info(f"Email sent to {to_email}")
+        return True
+    except Exception as e:
+        logger.exception(f"Failed to send email: {e}")
+        return False
 
 async def call_openai(messages: List[dict], functions: Optional[List[dict]] = None) -> object:
     """
