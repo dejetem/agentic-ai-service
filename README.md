@@ -19,7 +19,7 @@ Interactive API docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 
 
-```json
+```bash
   pgAdmin: [http://localhost:5050](http://localhost:5050)
   Login: admin@admin.com / admin
   Add Server:
