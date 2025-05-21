@@ -12,7 +12,7 @@ pip3 install -r requirements.txt or pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-The FastAPI app will be available at [http://127.0.0.1:8000/](http://127.0.0.1:8000/).  
+The FastAPI app will be available at [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
 Interactive API docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 ---
