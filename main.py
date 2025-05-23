@@ -1,18 +1,26 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile
 from databases import Database
 from pydantic import BaseModel, constr, EmailStr
 import os
+import io
 import json
 import asyncio
 from typing import Optional, List
 from datetime import datetime
-import aiosqlite
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 from dotenv import load_dotenv
 import aiosmtplib
 from email.message import EmailMessage
+import time
+import asyncio
+import hashlib
+from aiocache import cached
+from deepgram import DeepgramClient, PrerecordedOptions
+
+
 
 import logging
+MAX_FILE_SIZE_MB = 25
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -20,14 +28,26 @@ load_dotenv()  # Load OPENAI_API_KEY from .env
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/tasks_db")
 database = Database(DATABASE_URL)
 
+# Reduce semaphore to 1 to be more conservative with rate limits
+transcription_semaphore = asyncio.Semaphore(1)
 
 
 # Initialize OpenAI API key
 api_key = os.getenv("OPENAI_API_KEY")
+# print(f"API Key: {api_key}")
 if not api_key:
     raise ValueError("Missing OpenAI API key in environment variables")
 
 client = OpenAI(api_key=api_key)
+# Initialize Deepgram API key
+deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
+# print(f"Deepgram API Key: {deepgram_api_key}")
+if not deepgram_api_key:
+    raise ValueError("Missing Deepgram API key in environment variables")
+
+deepgram_client = DeepgramClient(deepgram_api_key)
+
+
 
 # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -35,6 +55,8 @@ app = FastAPI(title="Agentic AI Service", version="1.0")
 
 # Database file path (SQLite)
 DB_PATH = "tasks.db"
+
+
 
 # Pydantic model for incoming requests
 class AgentRequest(BaseModel):
@@ -99,20 +121,23 @@ async def send_notification(message: str, to_email: Optional[str] = None) -> boo
     email["To"] = to_email
     email["Subject"] = "Agent Notification"
     email.set_content(message)
-    
-    try:
-        await aiosmtplib.send(
-            email,
-            hostname=smtp_host,
-            port=smtp_port,
-            username=smtp_user,
-            password=smtp_password,
-            start_tls=True,
-        )
-        logger.info(f"Email sent to {to_email}")
-        return True
-    except Exception as e:
-        logger.exception(f"Failed to send email: {e}")
+    if to_email is not None:
+        try:
+            await aiosmtplib.send(
+                email,
+                hostname=smtp_host,
+                port=smtp_port,
+                username=smtp_user,
+                password=smtp_password,
+                start_tls=True,
+            )
+            logger.info(f"Email sent to {to_email}")
+            return True
+        except Exception as e:
+            logger.exception(f"Failed to send email: {e}")
+            return False
+    else:
+        logger.info("No email address provided, skipping email sending.")
         return False
 
 async def call_openai(messages: List[dict], functions: Optional[List[dict]] = None) -> object:
@@ -238,3 +263,57 @@ async def agent_endpoint(req: AgentRequest):
         task_id=task_id,
         notification_sent=notification_sent
     )
+
+@app.post("/agent/voice", response_model=AgentResponse, tags=["AI Agent"])
+async def agent_voice_command(email: Optional[EmailStr] = None, file: UploadFile = File(...)):
+    """
+    Accepts an audio file, transcribes it to text using Deepgram API,
+    and passes the transcribed instruction to the AI agent.
+    """
+
+    if not file.filename.endswith((".mp3", ".wav", ".m4a", ".webm", ".mpeg", ".mpga")):
+        raise HTTPException(status_code=400, detail="Unsupported file format, only mp3, wav, m4a, webm, mpeg, mpga are supported.")
+
+    try:
+        # Read the file into memory
+        contents = await file.read()
+        
+        # File size check (25MB limit)
+        if len(contents) > MAX_FILE_SIZE_MB * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large. Limit is 25MB.")
+        
+        
+        try:
+             # Prepare transcription options
+            options = PrerecordedOptions(
+                punctuate=True,
+                model="general",
+                language="en"
+            )
+            # Transcribe using Deepgram
+            response = deepgram_client.listen.prerecorded.v("1").transcribe_file(
+                {"buffer": contents},
+                options
+            )
+            instruction_text = response['results']['channels'][0]['alternatives'][0]['transcript']
+        except Exception as e:
+            logger.exception(f"Deepgram transcription failed: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to transcribe audio")
+
+        if not instruction_text.strip():
+            raise HTTPException(status_code=400, detail="No speech detected in audio")
+
+
+        logger.info(f"Transcribed voice to text: {instruction_text}")
+
+        # Reuse the agent logic
+        agent_request = AgentRequest(instruction=instruction_text, email=email if email is not None else None)
+        response = await agent_endpoint(agent_request)
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error in voice command processing")
+        raise HTTPException(status_code=500, detail="Failed to process voice command.")
+

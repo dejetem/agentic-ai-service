@@ -39,3 +39,8 @@ curl -X POST http://127.0.0.1:8000/agent \
     -H "Content-Type: application/json" \
     -d '{"instruction": "Log task: Write weekly report and notify my team."}'
 ```
+
+```bash
+curl -X POST http://localhost:8000/agent/voice \
+  -F "file=@/path/to/your/voice-command.m4a"
+```
